@@ -1,12 +1,17 @@
+// ============================================================
+// app/(auth)/_layout.tsx — Auth Stack Layout
+// Simple stack with no header, used for login screen
+// ============================================================
+
 import { Stack } from 'expo-router';
-import { Colors } from '../../constants/theme';
+import { COLORS } from '../../data/mockData';
 
 export default function AuthLayout() {
   return (
     <Stack
       screenOptions={{
         headerShown: false,
-        contentStyle: { backgroundColor: Colors.background },
+        contentStyle: { backgroundColor: COLORS.background },
         animation: 'fade',
       }}
     />

@@ -1,33 +1,63 @@
+// ============================================================
+// app/(admin)/manage.tsx — Manage Records (Admin)
+// Sorted list of ALL records grouped by user, with edit/delete
+// Simplified: no bulk select, uses simple FlatList
+// ============================================================
+
 import React, { useState, useMemo } from 'react';
-import { View, Text, StyleSheet, SectionList, TouchableOpacity } from 'react-native';
+import {
+  View,
+  Text,
+  FlatList,
+  TouchableOpacity,
+  Modal,
+  TextInput,
+  ScrollView,
+  Alert,
+  StyleSheet,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Colors, Spacing, Radius, Typography } from '../../constants/theme';
-import { Record as AppRecord } from '../../types';
-import { useRecords } from '../../hooks/useRecords';
-import { useToast } from '../../hooks/useToast';
-import ScreenWrapper from '../../components/layout/ScreenWrapper';
-import Card from '../../components/ui/Card';
-import EmptyState from '../../components/ui/EmptyState';
-import Loader from '../../components/ui/Loader';
-import ConfirmModal from '../../components/modals/ConfirmModal';
-import RecordModal from '../../components/modals/RecordModal';
-import { RecordFormData } from '../../types';
+import { useRecords } from '../../store/RecordsContext';
+import { COLORS, Record as AppRecord, RecordCategory, RecordStatus } from '../../data/mockData';
 
 type SortKey = 'date' | 'title' | 'status';
 
+const CATEGORIES: { value: RecordCategory; label: string }[] = [
+  { value: 'work', label: '💼 Work' },
+  { value: 'personal', label: '👤 Personal' },
+  { value: 'urgent', label: '🔴 Urgent' },
+  { value: 'other', label: '📋 Other' },
+];
+
+const STATUSES: { value: RecordStatus; label: string }[] = [
+  { value: 'active', label: 'Active' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'archived', label: 'Archived' },
+];
+
+const STATUS_COLORS: Record<string, string> = {
+  active: COLORS.success,
+  completed: COLORS.info,
+  archived: COLORS.textMuted,
+};
+
 export default function ManageScreen() {
   const { records, isLoading, updateRecord, deleteRecord } = useRecords();
-  const { showToast } = useToast();
 
   const [sortBy, setSortBy] = useState<SortKey>('date');
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmVisible, setConfirmVisible] = useState(false);
-  const [bulkMode, setBulkMode] = useState(false);
 
-  // Edit modal
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [editRecord, setEditRecord] = useState<AppRecord | undefined>();
+  // Edit modal state
+  const [editModal, setEditModal] = useState(false);
+  const [editingRecord, setEditingRecord] = useState<AppRecord | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editCategory, setEditCategory] = useState<RecordCategory>('work');
+  const [editStatus, setEditStatus] = useState<RecordStatus>('active');
 
+  // Sort records
   const sortedRecords = useMemo(() => {
     const sorted = [...records];
     switch (sortBy) {
@@ -44,72 +74,87 @@ export default function ManageScreen() {
     return sorted;
   }, [records, sortBy]);
 
-  // Group by user
-  const sections = useMemo(() => {
-    const grouped: Record<string, AppRecord[]> = {};
-    sortedRecords.forEach((r) => {
-      if (!grouped[r.ownerName]) grouped[r.ownerName] = [];
-      grouped[r.ownerName].push(r);
+  // ─── Edit Handlers ────────────────────────────────────────
+  const openEdit = (record: AppRecord) => {
+    setEditingRecord(record);
+    setEditTitle(record.title);
+    setEditDesc(record.description);
+    setEditCategory(record.category);
+    setEditStatus(record.status);
+    setEditModal(true);
+  };
+
+  const saveEdit = async () => {
+    if (!editingRecord || !editTitle.trim() || !editDesc.trim()) return;
+    await updateRecord(editingRecord.id, {
+      title: editTitle.trim(),
+      description: editDesc.trim(),
+      category: editCategory,
+      status: editStatus,
     });
-    return Object.entries(grouped).map(([title, data]) => ({ title, data }));
-  }, [sortedRecords]);
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setEditModal(false);
+    Alert.alert('✅ Updated', 'Record updated successfully');
   };
 
-  const handleBulkDelete = async () => {
-    for (const id of selectedIds) {
-      await deleteRecord(id);
-    }
-    setSelectedIds(new Set());
-    setConfirmVisible(false);
-    setBulkMode(false);
-    showToast('success', 'Deleted', `${selectedIds.size} records deleted`);
+  // ─── Delete (native Alert) ────────────────────────────────
+  const confirmDelete = (id: string) => {
+    Alert.alert('Delete Record', 'Are you sure? This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          await deleteRecord(id);
+          Alert.alert('✅ Deleted', 'Record deleted');
+        },
+      },
+    ]);
   };
 
-  const handleEdit = (record: AppRecord) => {
-    setEditRecord(record);
-    setEditModalVisible(true);
-  };
+  // ─── Render Card ──────────────────────────────────────────
+  const renderCard = ({ item }: { item: AppRecord }) => (
+    <View style={styles.card}>
+      <View style={[styles.statusBar, { backgroundColor: STATUS_COLORS[item.status] }]} />
+      <View style={styles.cardContent}>
+        <Text style={styles.cardTitle} numberOfLines={1}>{item.title}</Text>
+        <View style={styles.badgeRow}>
+          <View style={[styles.badge, { backgroundColor: COLORS.info + '20' }]}>
+            <Text style={[styles.badgeText, { color: COLORS.info }]}>{item.category}</Text>
+          </View>
+          <View style={[styles.badge, { backgroundColor: STATUS_COLORS[item.status] + '20' }]}>
+            <Text style={[styles.badgeText, { color: STATUS_COLORS[item.status] }]}>{item.status}</Text>
+          </View>
+          <Text style={styles.ownerTag}>{item.ownerName}</Text>
+        </View>
+        <View style={styles.cardActions}>
+          <TouchableOpacity onPress={() => openEdit(item)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="pencil-outline" size={18} color={COLORS.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => confirmDelete(item.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons name="trash-outline" size={18} color={COLORS.error} />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
 
-  const handleEditSave = async (data: RecordFormData) => {
-    if (editRecord) {
-      await updateRecord(editRecord.id, data);
-      showToast('success', 'Updated', 'Record updated successfully');
-    }
-    setEditModalVisible(false);
-  };
-
-  const handleSingleDelete = async (id: string) => {
-    await deleteRecord(id);
-    showToast('success', 'Deleted', 'Record deleted');
-  };
-
-  if (isLoading) return <Loader color={Colors.admin} />;
+  if (isLoading) {
+    return (
+      <View style={styles.loader}>
+        <Text style={{ color: COLORS.textMuted }}>Loading...</Text>
+      </View>
+    );
+  }
 
   return (
-    <ScreenWrapper scroll={false} padded={false}>
-      {/* Header */}
+    <SafeAreaView style={styles.safeArea} edges={['top']}>
+      {/* ─── Header ────────────────────────────────────── */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Manage Records</Text>
-        <TouchableOpacity
-          onPress={() => { setBulkMode(!bulkMode); setSelectedIds(new Set()); }}
-          style={[styles.bulkBtn, bulkMode && styles.bulkBtnActive]}
-        >
-          <Ionicons name={bulkMode ? 'close' : 'checkmark-done-outline'} size={18} color={bulkMode ? Colors.white : Colors.admin} />
-          <Text style={[styles.bulkBtnText, bulkMode && { color: Colors.white }]}>
-            {bulkMode ? 'Cancel' : 'Select'}
-          </Text>
-        </TouchableOpacity>
+        <Text style={styles.headerSub}>{records.length} total records</Text>
       </View>
 
-      {/* Sort Toggle */}
+      {/* ─── Sort Buttons ──────────────────────────────── */}
       <View style={styles.sortRow}>
         {(['date', 'title', 'status'] as SortKey[]).map((key) => (
           <TouchableOpacity
@@ -124,214 +169,122 @@ export default function ManageScreen() {
         ))}
       </View>
 
-      {/* Bulk delete bar */}
-      {bulkMode && selectedIds.size > 0 && (
-        <View style={styles.bulkBar}>
-          <Text style={styles.bulkBarText}>{selectedIds.size} selected</Text>
-          <TouchableOpacity
-            onPress={() => setConfirmVisible(true)}
-            style={styles.bulkDeleteBtn}
-          >
-            <Ionicons name="trash-outline" size={16} color={Colors.white} />
-            <Text style={styles.bulkDeleteText}>Delete All</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Section List */}
-      <SectionList
-        sections={sections}
+      {/* ─── Records List ──────────────────────────────── */}
+      <FlatList
+        data={sortedRecords}
         keyExtractor={(item) => item.id}
+        renderItem={renderCard}
         contentContainerStyle={styles.listContent}
-        renderSectionHeader={({ section }) => (
-          <View style={styles.sectionHeader}>
-            <View style={styles.sectionIcon}>
-              <Text style={styles.sectionInitial}>{section.title.charAt(0)}</Text>
-            </View>
-            <Text style={styles.sectionTitle}>{section.title}</Text>
-            <Text style={styles.sectionCount}>{section.data.length} records</Text>
-          </View>
-        )}
-        renderItem={({ item, index }) => (
-          <View style={styles.itemRow}>
-            {bulkMode && (
-              <TouchableOpacity
-                onPress={() => toggleSelect(item.id)}
-                style={styles.checkbox}
-              >
-                <Ionicons
-                  name={selectedIds.has(item.id) ? 'checkbox' : 'square-outline'}
-                  size={22}
-                  color={selectedIds.has(item.id) ? Colors.admin : Colors.textMuted}
-                />
-              </TouchableOpacity>
-            )}
-            <View style={{ flex: 1 }}>
-              <Card
-                record={item}
-                onEdit={!bulkMode ? handleEdit : undefined}
-                onDelete={!bulkMode ? handleSingleDelete : undefined}
-                compact
-                index={index}
-              />
-            </View>
-          </View>
-        )}
         ListEmptyComponent={
-          <EmptyState
-            icon="clipboard-outline"
-            title="No Records"
-            message="There are no records to manage yet."
-          />
+          <View style={styles.empty}>
+            <Ionicons name="clipboard-outline" size={64} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>No Records</Text>
+            <Text style={styles.emptyMsg}>There are no records to manage yet.</Text>
+          </View>
         }
       />
 
-      {/* Modals */}
-      <ConfirmModal
-        visible={confirmVisible}
-        title="Bulk Delete"
-        message={`Are you sure you want to delete ${selectedIds.size} records? This cannot be undone.`}
-        confirmLabel={`Delete ${selectedIds.size}`}
-        onConfirm={handleBulkDelete}
-        onCancel={() => setConfirmVisible(false)}
-      />
-
-      <RecordModal
-        visible={editModalVisible}
-        mode="edit"
-        record={editRecord}
-        onClose={() => setEditModalVisible(false)}
-        onSave={handleEditSave}
-      />
-    </ScreenWrapper>
+      {/* ─── Edit Modal ────────────────────────────────── */}
+      <Modal visible={editModal} transparent animationType="slide" onRequestClose={() => setEditModal(false)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setEditModal(false)} />
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Record</Text>
+              <TouchableOpacity onPress={() => setEditModal(false)}>
+                <Ionicons name="close" size={24} color={COLORS.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+              <Text style={styles.fieldLabel}>Title</Text>
+              <TextInput style={styles.modalInput} value={editTitle} onChangeText={setEditTitle} placeholder="Title" placeholderTextColor={COLORS.textMuted} />
+              <Text style={styles.fieldLabel}>Description</Text>
+              <TextInput style={[styles.modalInput, { minHeight: 80, textAlignVertical: 'top' }]} value={editDesc} onChangeText={setEditDesc} placeholder="Description..." placeholderTextColor={COLORS.textMuted} multiline />
+              <Text style={styles.fieldLabel}>Category</Text>
+              <View style={styles.pillRow}>
+                {CATEGORIES.map((c) => (
+                  <TouchableOpacity key={c.value} onPress={() => setEditCategory(c.value)} style={[styles.pill, editCategory === c.value && styles.pillActive]}>
+                    <Text style={[styles.pillText, editCategory === c.value && { color: COLORS.admin }]}>{c.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.fieldLabel}>Status</Text>
+              <View style={styles.pillRow}>
+                {STATUSES.map((s) => (
+                  <TouchableOpacity key={s.value} onPress={() => setEditStatus(s.value)} style={[styles.pill, editStatus === s.value && { backgroundColor: STATUS_COLORS[s.value] + '25', borderColor: STATUS_COLORS[s.value] }]}>
+                    <Text style={[styles.pillText, editStatus === s.value && { color: STATUS_COLORS[s.value] }]}>{s.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditModal(false)}>
+                  <Text style={styles.cancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.saveBtn, { backgroundColor: COLORS.admin }]} onPress={saveEdit}>
+                  <Text style={styles.saveBtnText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
-  },
-  headerTitle: {
-    ...Typography.displayMD,
-    color: Colors.textPrimary,
-  },
-  bulkBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-    borderColor: Colors.admin,
-  },
-  bulkBtnActive: {
-    backgroundColor: Colors.admin,
-  },
-  bulkBtnText: {
-    ...Typography.bodySmall,
-    color: Colors.admin,
-    fontWeight: '600',
-  },
-  sortRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    paddingHorizontal: Spacing.md,
-    marginBottom: Spacing.md,
-  },
+  safeArea: { flex: 1, backgroundColor: COLORS.background },
+  loader: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.background },
+  header: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8 },
+  headerTitle: { fontSize: 24, fontWeight: '700', color: COLORS.textPrimary },
+  headerSub: { fontSize: 13, color: COLORS.textSecondary, marginTop: 2 },
+  // Sort
+  sortRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, marginBottom: 12 },
   sortBtn: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: COLORS.surface,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: COLORS.border,
   },
-  sortBtnActive: {
-    backgroundColor: Colors.admin + '20',
-    borderColor: Colors.admin,
-  },
-  sortBtnText: {
-    ...Typography.bodySmall,
-    color: Colors.textMuted,
-  },
-  sortBtnTextActive: {
-    color: Colors.admin,
-    fontWeight: '600',
-  },
-  bulkBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: Colors.error + '15',
-    marginHorizontal: Spacing.md,
-    padding: Spacing.sm,
-    borderRadius: Radius.md,
-    marginBottom: Spacing.sm,
-  },
-  bulkBarText: {
-    ...Typography.bodySmall,
-    color: Colors.error,
-    fontWeight: '600',
-  },
-  bulkDeleteBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: Colors.error,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs + 2,
-    borderRadius: Radius.full,
-  },
-  bulkDeleteText: {
-    ...Typography.bodySmall,
-    color: Colors.white,
-    fontWeight: '600',
-  },
-  listContent: {
-    paddingHorizontal: Spacing.md,
-    paddingBottom: 40,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    marginTop: Spacing.sm,
-  },
-  sectionIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: Colors.admin + '20',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: Spacing.sm,
-  },
-  sectionInitial: {
-    ...Typography.bodySmall,
-    color: Colors.admin,
-    fontWeight: '700',
-  },
-  sectionTitle: {
-    ...Typography.subheading,
-    color: Colors.textPrimary,
-    flex: 1,
-  },
-  sectionCount: {
-    ...Typography.caption,
-    color: Colors.textMuted,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  checkbox: {
-    marginRight: Spacing.sm,
-    padding: 2,
-  },
+  sortBtnActive: { backgroundColor: COLORS.admin + '20', borderColor: COLORS.admin },
+  sortBtnText: { fontSize: 13, color: COLORS.textMuted },
+  sortBtnTextActive: { color: COLORS.admin, fontWeight: '600' },
+  // List
+  listContent: { paddingHorizontal: 16, paddingBottom: 40 },
+  // Card (compact)
+  card: { flexDirection: 'row', backgroundColor: COLORS.surface, borderRadius: 12, marginBottom: 6, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border },
+  statusBar: { width: 3 },
+  cardContent: { flex: 1, padding: 12 },
+  cardTitle: { fontSize: 15, fontWeight: '600', color: COLORS.textPrimary, marginBottom: 4 },
+  badgeRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  badge: { paddingHorizontal: 6, paddingVertical: 1, borderRadius: 999 },
+  badgeText: { fontSize: 10, fontWeight: '600', letterSpacing: 0.5 },
+  ownerTag: { fontSize: 11, color: COLORS.textMuted, marginLeft: 'auto' },
+  cardActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: COLORS.border },
+  // Empty
+  empty: { alignItems: 'center', paddingVertical: 48 },
+  emptyTitle: { fontSize: 20, fontWeight: '600', color: COLORS.textPrimary, marginTop: 16, marginBottom: 8 },
+  emptyMsg: { fontSize: 15, color: COLORS.textSecondary, textAlign: 'center' },
+  // Modal
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  modalSheet: { backgroundColor: COLORS.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, maxHeight: '85%', paddingBottom: 32 },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: COLORS.border, alignSelf: 'center', marginTop: 8, marginBottom: 8 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  modalTitle: { fontSize: 20, fontWeight: '600', color: COLORS.textPrimary },
+  modalBody: { paddingHorizontal: 24, paddingTop: 16 },
+  fieldLabel: { fontSize: 13, color: COLORS.textSecondary, marginBottom: 4, marginTop: 12 },
+  modalInput: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, color: COLORS.textPrimary, fontSize: 15 },
+  pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 },
+  pill: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface },
+  pillActive: { backgroundColor: COLORS.admin + '25', borderColor: COLORS.admin },
+  pillText: { fontSize: 13, color: COLORS.textMuted, fontWeight: '500' },
+  modalActions: { flexDirection: 'row', gap: 8, marginTop: 24, marginBottom: 16 },
+  cancelBtn: { flex: 1, paddingVertical: 14, borderRadius: 12, backgroundColor: COLORS.surfaceHigh, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center' },
+  cancelBtnText: { fontSize: 15, fontWeight: '600', color: COLORS.textPrimary },
+  saveBtn: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+  saveBtnText: { fontSize: 15, fontWeight: '600', color: COLORS.white },
 });
